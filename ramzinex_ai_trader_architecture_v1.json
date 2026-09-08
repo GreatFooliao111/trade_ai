@@ -1,0 +1,533 @@
+{
+  "project": {
+    "name": "ramzinex-ai-trader",
+    "version": "1.0.0",
+    "purpose": "Regime-aware, cost-aware algorithmic crypto trading system for Ramzinex",
+    "primary_objective": "Maximize risk-adjusted expected net return per unit holding time, not raw prediction accuracy.",
+    "important_disclaimer": "No strategy is guaranteed to be profitable. All strategies must pass realistic walk-forward backtests including fees, spread, slippage, latency and execution constraints before live deployment."
+  },
+  "design_principles": {
+    "llm_role": "Research, diagnostics, anomaly explanation and optional external-information interpretation; never the direct order trigger.",
+    "numeric_ai_role": "Estimate probabilities, expected returns, volatility and trade quality from structured market features.",
+    "strategy_role": "Generate independent candidate signals.",
+    "orchestrator_role": "Select or combine strategies according to market regime.",
+    "risk_role": "Have veto power over every trade.",
+    "execution_role": "Optimize limit/market execution and manage live order state.",
+    "default_mode": "Paper trading first, then very small capital, then gradual scaling."
+  },
+  "market_data": {
+    "source": "Ramzinex OpenAPI",
+    "public_endpoints": [
+      {
+        "endpoint": "/orderbooks/{pair_id}/buys_sells",
+        "purpose": "Open bid/ask order book"
+      },
+      {
+        "endpoint": "/orderbooks/{pair_id}/trades",
+        "purpose": "Recent executed trades"
+      },
+      {
+        "endpoint": "/orderbooks/buys_sells",
+        "purpose": "Open order books across markets"
+      },
+      {
+        "endpoint": "/pairs",
+        "purpose": "Discover available markets"
+      },
+      {
+        "endpoint": "/pairs/{pair_id}",
+        "purpose": "Inspect a specific market"
+      },
+      {
+        "endpoint": "/currencies",
+        "purpose": "Discover tradable currencies"
+      },
+      {
+        "endpoint": "/chart/statistics-24",
+        "purpose": "24-hour market statistics"
+      },
+      {
+        "endpoint": "/chart/tv/history",
+        "purpose": "Historical OHLCV candles"
+      },
+      {
+        "endpoint": "/orderbooks/{pair_id}/market_buy_price",
+        "purpose": "Estimate realized buy cost for a quantity"
+      },
+      {
+        "endpoint": "/orderbooks/{pair_id}/market_sell_price",
+        "purpose": "Estimate realized sell proceeds/cost for a quantity"
+      }
+    ],
+    "candle_resolutions": [
+      "1",
+      "5",
+      "15",
+      "30",
+      "60",
+      "120",
+      "240",
+      "720",
+      "1D",
+      "1W"
+    ],
+    "raw_features": [
+      "timestamp",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "best_bid",
+      "best_ask",
+      "spread",
+      "bid_depth",
+      "ask_depth",
+      "recent_trade_price",
+      "recent_trade_volume"
+    ]
+  },
+  "feature_engine": {
+    "price_features": [
+      "returns_1m",
+      "returns_5m",
+      "returns_15m",
+      "returns_30m",
+      "returns_1h",
+      "returns_4h",
+      "EMA_distances",
+      "SMA_distances",
+      "VWAP_distance",
+      "ATR",
+      "realized_volatility",
+      "Bollinger_zscore"
+    ],
+    "momentum_features": [
+      "RSI",
+      "ROC",
+      "multi_horizon_momentum",
+      "trend_slope"
+    ],
+    "volume_features": [
+      "volume_zscore",
+      "volume_rate_of_change",
+      "relative_volume"
+    ],
+    "orderbook_features": [
+      "top_n_bid_volume",
+      "top_n_ask_volume",
+      "order_book_imbalance",
+      "weighted_order_book_imbalance",
+      "spread_bps",
+      "book_slope",
+      "depth_asymmetry",
+      "microprice"
+    ],
+    "trade_flow_features": [
+      "buy_sell_trade_imbalance",
+      "aggressive_buy_ratio",
+      "aggressive_sell_ratio",
+      "trade_intensity"
+    ],
+    "regime_features": [
+      "trend_strength",
+      "range_strength",
+      "volatility_percentile",
+      "breakout_distance",
+      "liquidity_score"
+    ]
+  },
+  "regime_engine": {
+    "purpose": "Detect market state before allowing strategy-specific entry logic.",
+    "states": [
+      "TREND_UP",
+      "TREND_DOWN",
+      "RANGE",
+      "BREAKOUT",
+      "HIGH_VOLATILITY",
+      "LOW_LIQUIDITY",
+      "NO_TRADE"
+    ],
+    "recommended_method": {
+      "phase_1": "Rule-based regime classifier using volatility, trend strength, price structure and volume.",
+      "phase_2": "Supervised ML regime classifier.",
+      "phase_3": "Optional hidden-state/probabilistic regime model."
+    },
+    "strategy_mapping": {
+      "TREND_UP": [
+        "momentum",
+        "breakout",
+        "orderbook_confirmation"
+      ],
+      "TREND_DOWN": [
+        "shorting_if_supported_later",
+        "defensive_exit_logic"
+      ],
+      "RANGE": [
+        "mean_reversion",
+        "orderbook_reversal"
+      ],
+      "BREAKOUT": [
+        "breakout_volume",
+        "momentum",
+        "orderbook_confirmation"
+      ],
+      "HIGH_VOLATILITY": [
+        "breakout",
+        "reduced_position_size"
+      ],
+      "LOW_LIQUIDITY": [
+        "NO_TRADE"
+      ],
+      "NO_TRADE": []
+    }
+  },
+  "alpha_strategies": {
+    "momentum": {
+      "priority": 1,
+      "use": "Core strategy for directional moves.",
+      "inputs": [
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "4h context",
+        "volume"
+      ],
+      "entry_logic": [
+        "Positive multi-horizon momentum",
+        "Higher-timeframe trend agrees",
+        "Volume confirms",
+        "Expected net edge exceeds trading cost"
+      ],
+      "exit_logic": [
+        "Momentum deterioration",
+        "Target reached",
+        "Volatility-adjusted stop hit",
+        "Opposing regime detected"
+      ]
+    },
+    "mean_reversion": {
+      "priority": 2,
+      "use": "Range-bound markets only.",
+      "inputs": [
+        "VWAP distance",
+        "Bollinger z-score",
+        "RSI",
+        "short-term volatility",
+        "orderbook imbalance"
+      ],
+      "entry_logic": [
+        "Extreme deviation from local fair value",
+        "Range regime confirmed",
+        "Orderbook/trade-flow reversal confirmation",
+        "Expected net edge exceeds trading cost"
+      ],
+      "hard_filter": "Disable during strong directional trend."
+    },
+    "orderbook_microstructure": {
+      "priority": 1,
+      "use": "Short-horizon confirmation and timing layer, not standalone truth.",
+      "inputs": [
+        "order book",
+        "recent trades",
+        "spread",
+        "depth"
+      ],
+      "features": [
+        "OBI",
+        "weighted OBI",
+        "microprice",
+        "depth asymmetry",
+        "trade imbalance"
+      ],
+      "hard_filter": "Reject signals when liquidity quality is poor or book conditions are unstable."
+    },
+    "breakout_volume": {
+      "priority": 2,
+      "use": "Capture expansion after a validated range break.",
+      "inputs": [
+        "recent highs/lows",
+        "ATR",
+        "volume anomaly",
+        "orderbook imbalance",
+        "multi-timeframe momentum"
+      ],
+      "entry_logic": [
+        "Breakout exceeds volatility-adjusted threshold",
+        "Volume anomaly confirms",
+        "Orderbook/trade flow confirms",
+        "No excessive spread/slippage"
+      ]
+    }
+  },
+  "ai_layer": {
+    "architecture": "Use a supervised tabular model as the first production candidate; use LLMs outside the latency-critical decision loop.",
+    "recommended_models_phase_1": [
+      "LightGBM",
+      "XGBoost"
+    ],
+    "model_tasks": [
+      "P(up_move | horizon, features)",
+      "Expected_return_after_cost",
+      "Expected_volatility",
+      "Trade_quality_score",
+      "Optional regime_probability"
+    ],
+    "target_horizons": [
+      "5m",
+      "15m",
+      "30m"
+    ],
+    "training_rules": [
+      "Purged time-series split where appropriate",
+      "Walk-forward validation",
+      "No future leakage",
+      "Out-of-sample evaluation",
+      "Calibration of probabilities"
+    ],
+    "decision_rule": "Trade only when expected net return is positive and exceeds a configurable risk/cost buffer."
+  },
+  "signal_fusion": {
+    "architecture": "Independent strategy signals feed a meta-decision layer.",
+    "example_signal_vector": {
+      "momentum": "[-1, 1]",
+      "mean_reversion": "[-1, 1]",
+      "orderbook": "[-1, 1]",
+      "breakout": "[-1, 1]",
+      "ai_probability_up": "[0, 1]",
+      "expected_net_return": "continuous",
+      "confidence": "[0, 1]"
+    },
+    "recommended_v1": "Weighted fusion plus ML meta-model; regime engine controls which alpha signals are eligible.",
+    "important_rule": "Do not require unanimous agreement; require sufficient expected edge after costs and risk constraints."
+  },
+  "cost_engine": {
+    "must_include": [
+      "user-specific exchange fee",
+      "spread",
+      "estimated slippage",
+      "market impact",
+      "expected latency cost",
+      "round-trip execution cost"
+    ],
+    "api_support": [
+      "/user/fee",
+      "/orderbooks/{pair_id}/market_buy_price",
+      "/orderbooks/{pair_id}/market_sell_price"
+    ],
+    "trade_filter": "expected_gross_move > total_expected_cost + minimum_edge_buffer",
+    "optimization_target": "net_return / expected_holding_time"
+  },
+  "risk_engine": {
+    "principles": [
+      "Risk engine can veto every signal.",
+      "Position sizing must be volatility-aware.",
+      "Daily and rolling drawdown limits are mandatory.",
+      "Maximum concurrent exposure is mandatory.",
+      "Per-market exposure limits are mandatory.",
+      "Circuit breaker after abnormal API, execution or market conditions."
+    ],
+    "recommended_controls": {
+      "max_risk_per_trade": "Configurable; start conservatively.",
+      "max_daily_loss": "Configurable hard stop.",
+      "max_drawdown": "Configurable hard stop.",
+      "max_spread": "Reject trade above threshold.",
+      "max_slippage": "Reject trade above threshold.",
+      "cooldown_after_loss_streak": "Configurable."
+    }
+  },
+  "execution_engine": {
+    "private_endpoints": [
+      {
+        "endpoint": "/users/me/orders/limit",
+        "purpose": "Submit limit order"
+      },
+      {
+        "endpoint": "/users/me/orders/market",
+        "purpose": "Submit market order"
+      },
+      {
+        "endpoint": "/users/me/orders2/{order_id}",
+        "purpose": "Inspect individual order"
+      },
+      {
+        "endpoint": "/users/me/orders3",
+        "purpose": "Query user orders by filters"
+      },
+      {
+        "endpoint": "/users/me/orders/{order_id}/cancel",
+        "purpose": "Cancel individual order"
+      },
+      {
+        "endpoint": "/users/me/cancelAllOpenOrders",
+        "purpose": "Emergency cancel-all"
+      }
+    ],
+    "policy": {
+      "default": "Prefer limit execution when expected fill probability is adequate and edge survives waiting.",
+      "market_order": "Use when immediacy has higher expected value than price improvement.",
+      "cancel_replace": "Reprice stale limit orders using a bounded policy.",
+      "state_machine": [
+        "SIGNAL_CREATED",
+        "RISK_APPROVED",
+        "ORDER_SUBMITTED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCEL_PENDING",
+        "CANCELLED",
+        "EXIT_PENDING",
+        "CLOSED"
+      ]
+    }
+  },
+  "portfolio_engine": {
+    "phase_1": "Single-position or limited concurrent positions to simplify validation.",
+    "phase_2": "Multi-market capital allocation.",
+    "selection_metric": "Expected net return per unit time adjusted for correlation and risk.",
+    "avoid": "Blindly trading every pair with a signal."
+  },
+  "data_and_storage": {
+    "required_tables_or_streams": [
+      "candles",
+      "orderbook_snapshots",
+      "trades",
+      "features",
+      "regimes",
+      "signals",
+      "orders",
+      "fills",
+      "positions",
+      "pnl",
+      "model_predictions",
+      "backtest_runs"
+    ],
+    "minimum_retention": "Enough historical data to support multiple market regimes and robust walk-forward validation.",
+    "event_logging": "Every decision must be reproducible from stored inputs, model version and configuration."
+  },
+  "backtesting": {
+    "required": [
+      "Historical OHLCV backtest",
+      "Cost-aware backtest",
+      "Walk-forward evaluation",
+      "Out-of-sample holdout",
+      "Parameter stability analysis",
+      "Regime-by-regime performance",
+      "Monte Carlo trade-order reshuffling",
+      "Sensitivity analysis"
+    ],
+    "primary_metrics": [
+      "Net return",
+      "Annualized return",
+      "Profit factor",
+      "Sharpe ratio",
+      "Sortino ratio",
+      "Maximum drawdown",
+      "Expectancy per trade",
+      "Win rate",
+      "Average holding time",
+      "Net return per unit time",
+      "Turnover",
+      "Cost as percentage of gross PnL"
+    ],
+    "anti_overfitting": [
+      "No optimization on the final holdout period",
+      "Prefer simple feature sets before adding complexity",
+      "Reject strategies whose edge disappears under modest cost/slippage stress"
+    ]
+  },
+  "deployment_phases": [
+    {
+      "phase": 0,
+      "name": "API adapter",
+      "goal": "Reliable market-data and private-order clients."
+    },
+    {
+      "phase": 1,
+      "name": "Data warehouse",
+      "goal": "Collect OHLCV, orderbook and trades continuously."
+    },
+    {
+      "phase": 2,
+      "name": "Feature engine",
+      "goal": "Generate reproducible feature snapshots."
+    },
+    {
+      "phase": 3,
+      "name": "Strategy research",
+      "goal": "Implement momentum, mean reversion, orderbook and breakout independently."
+    },
+    {
+      "phase": 4,
+      "name": "Regime engine",
+      "goal": "Enable/disable strategies by market state."
+    },
+    {
+      "phase": 5,
+      "name": "ML meta-model",
+      "goal": "Estimate net edge and trade quality."
+    },
+    {
+      "phase": 6,
+      "name": "Cost/risk/execution",
+      "goal": "Turn signals into controlled orders."
+    },
+    {
+      "phase": 7,
+      "name": "Paper trading",
+      "goal": "Validate live data, latency, fills and model calibration without real capital."
+    },
+    {
+      "phase": 8,
+      "name": "Small-capital live test",
+      "goal": "Validate real execution with tightly bounded risk."
+    },
+    {
+      "phase": 9,
+      "name": "Scale",
+      "goal": "Increase capital only after statistically credible live performance."
+    }
+  ],
+  "recommended_default_strategy_stack": {
+    "core": "Momentum + Orderbook confirmation",
+    "range_mode": "Mean Reversion + Orderbook confirmation",
+    "breakout_mode": "Breakout + Volume + Momentum + Orderbook confirmation",
+    "ai": "LightGBM/XGBoost meta-model estimating expected net return",
+    "execution": "Adaptive Limit/Market execution",
+    "risk": "Volatility-aware position sizing + hard drawdown/circuit-breaker controls",
+    "timeframes": {
+      "context": [
+        "1h",
+        "4h"
+      ],
+      "signal": [
+        "5m",
+        "15m",
+        "30m"
+      ],
+      "microstructure": [
+        "live orderbook",
+        "recent trades"
+      ]
+    }
+  },
+  "what_not_to_build_first": [
+    "LLM-only trader",
+    "End-to-end reinforcement-learning trader",
+    "Unfiltered high-frequency scalper",
+    "Strategy that ignores fees/slippage",
+    "Always-on ensemble with no regime detection",
+    "Over-optimized indicator soup"
+  ],
+  "success_gate": {
+    "before_live": [
+      "Positive out-of-sample net expectancy",
+      "Positive edge after conservative transaction-cost assumptions",
+      "Stable performance across multiple market regimes",
+      "Controlled maximum drawdown",
+      "Live paper-trading behavior matches backtest assumptions",
+      "Execution and cancellation logic verified"
+    ],
+    "production_principle": "The bot should trade less when edge is weak and aggressively refuse low-quality opportunities."
+  }
+}
